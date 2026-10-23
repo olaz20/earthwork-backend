@@ -6,6 +6,21 @@ from app.api.router import api_router
 from app.core.config import settings
 from fastapi.middleware.cors import CORSMiddleware
 
+from fastapi.requests import Request
+from fastapi.responses import JSONResponse
+
+from app.core.exceptions import DomainError
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(DomainError)
+    async def domain_error_handler(request: Request, exc: DomainError):
+        body: dict = {"detail": exc.message}
+        if exc.errors:
+            body["errors"] = exc.errors
+        return JSONResponse(status_code=exc.status_code, content=body)
+
+        
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: make sure the data folders exist
@@ -22,7 +37,7 @@ def create_app() -> FastAPI:
         debug=settings.debug,
         lifespan=lifespan,
     )
-    
+    register_exception_handlers(app)
 
     app.add_middleware(
         CORSMiddleware,
