@@ -12,7 +12,7 @@ from app.schemas.project import (
     ProjectRead,
     ProjectUpdate,
 )
-from sqlalchemy.sql import ScalarSelect
+from sqlalchemy.sql.selectable import ScalarSelect
 
 def create_project(db: Session, data: ProjectCreate) -> Project:
     project = Project(**data.model_dump())
