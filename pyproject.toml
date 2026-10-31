@@ -13,7 +13,10 @@ dependencies = [
     "python-multipart (>=0.0.32,<0.0.33)",
     "sqlalchemy (>=2.1.5,<3.0.0)",
     "psycopg[binary] (>=3.3.6,<4.0.0)",
-    "alembic (>=1.20.0,<2.0.0)"
+    "alembic (>=1.20.0,<2.0.0)",
+    "numpy (>=2.5.4,<3.0.0)",
+    "shapely (>=2.2.0,<3.0.0)",
+    "scipy (>=1.18.1,<2.0.0)"
 ]
 
 
