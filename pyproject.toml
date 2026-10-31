@@ -5,7 +5,7 @@ description = ""
 authors = [
     {name = "Olamoyegun Olamide",email = "olamoyegunolamidesammy@gmail.com"}
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<4.0"
 dependencies = [
     "fastapi (>=0.151.0,<0.152.0)",
     "uvicorn[standard] (>=0.54.0,<0.55.0)",
@@ -16,9 +16,12 @@ dependencies = [
     "alembic (>=1.20.0,<2.0.0)",
     "numpy (>=2.5.4,<3.0.0)",
     "shapely (>=2.2.0,<3.0.0)",
-    "scipy (>=1.18.1,<2.0.0)"
+    "scipy (>=1.18.1,<2.0.0)",
+    "reportlab (>=5.1.0,<6.0.0)"
 ]
 
+[tool.poetry]
+package-mode = false
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
