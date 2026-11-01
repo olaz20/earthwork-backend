@@ -25,12 +25,9 @@ import numpy as np
 import shapely
 from scipy.spatial import Delaunay, QhullError
 
-from .surface_model import (
-    SurfaceConfig,
-    SurfaceModel,
-    clean_points,
-    point_spacing,
-)
+
+from app.services.computation_runner import SurfaceConfig, clean_points, point_spacing, SurfaceModel
+
 
 _TARGET_CELLS = 250_000
 _MAX_BOUNDARY_VERTICES = 50_000

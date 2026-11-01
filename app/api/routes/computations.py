@@ -10,8 +10,8 @@ from app.schemas.computation import (
     ComputationStatus,
 )
 from app.services import computation_store as store
-from app.services.computation_runner import run_computation
 
+from app.services.volume_engine import run_computation
 router = APIRouter(prefix="/projects/{project_id}/computations", tags=["computations"])
 
 

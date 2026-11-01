@@ -2,11 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, get_project, get_report
+from app.api.deps import get_db, get_project_or_404, get_report_or_404
 from app.models import Project
 from app.models.report import Report
 from app.schemas.report import ReportCreate, ReportList, ReportRead
-from app.services import report_files, report_store
+from app.services import report_file as report_files
+from app.services import report_store
 from app.services.report_render import MEDIA_TYPES
 
 router = APIRouter(prefix="/projects/{project_id}/reports", tags=["reports"])
@@ -26,7 +27,7 @@ def _read(request: Request, row: Report) -> ReportRead:
 def create_report(
     payload: ReportCreate,
     request: Request,
-    project: Project = Depends(get_project),
+    project: Project = Depends(get_project_or_404),
     db: Session = Depends(get_db),
 ):
     try:
@@ -44,7 +45,7 @@ def list_reports(
     computation_id: int | None = Query(None, description="Only reports for this computation"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    project: Project = Depends(get_project),
+    project: Project = Depends(get_project_or_404),
     db: Session = Depends(get_db),
 ):
     rows, total = report_store.list_reports(db, project.id, computation_id, limit, offset)
@@ -52,7 +53,7 @@ def list_reports(
 
 
 @router.get("/{report_id}/download", name="download_report", summary="Download the report file")
-def download_report(report: Report = Depends(get_report)):
+def download_report(report: Report = Depends(get_report_or_404)):
     try:
         path = report_files.resolve(report.project_id, report.stored_name)
     except ValueError:

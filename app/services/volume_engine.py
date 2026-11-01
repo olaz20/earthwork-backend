@@ -18,8 +18,8 @@ from app.db.session import SessionLocal  # adjust to your session factory
 from app.models import Computation
 from app.schemas.computation import ComputationParameters, ComputationStatus
 from app.services import computation_store as store
-from app.services.surface_model import SurfaceConfig, SurfaceError
-from app.services.volume_engine import EngineError, EngineParams, compute_earthwork
+from app.services.computation_runner import SurfaceConfig, SurfaceError
+from app.services.computation_store import EngineError, EngineParams, compute_earthwork
 
 logger = logging.getLogger(__name__)
 

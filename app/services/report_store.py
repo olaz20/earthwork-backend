@@ -8,7 +8,7 @@ from app.models import Computation, Project
 from app.models.report import Report
 from app.schemas.computation import ComputationStatus
 from app.schemas.report import ReportCreate
-from app.services import report_files
+from app.services import report_file as report_files
 from app.services.report_context import build_context
 from app.services.report_render import RENDERERS
 

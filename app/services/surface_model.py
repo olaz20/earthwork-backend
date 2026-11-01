@@ -11,20 +11,20 @@ from sqlalchemy.orm import Session
 from app.models import (
     Boundary,
     BoundaryPoint,
-    BoundaryType,
     Computation,
     Project,
     Survey,
-    SurfaceType,
     SurveyPoint,
 )
+from app.schemas.common import BoundaryType
+from app.schemas.survey import SurfaceType
 from app.schemas.computation import ComputationCreate, ComputationStatus
 
 # Enum members that identify each input role. Change here if your enum names differ.
 INITIAL_KIND = SurfaceType.initial_topo
-PROGRESS_KIND = SurfaceType.progress_topo
-SITE_KIND = BoundaryType.site
-FILL_KIND = BoundaryType.fill
+PROGRESS_KIND = SurfaceType.filled_topo
+SITE_KIND = BoundaryType.site_boundary
+FILL_KIND = BoundaryType.filled_boundary
 
 MIN_SURVEY_POINTS = 3
 MIN_BOUNDARY_POINTS = 3
