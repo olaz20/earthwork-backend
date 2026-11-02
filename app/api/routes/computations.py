@@ -9,8 +9,8 @@ from app.schemas.computation import (
     ComputationRead,
     ComputationStatus,
 )
-from app.services import computation_store as store
 
+from app.services.surface_model import ComputationInputError, ensure_projected_crs, list_computations, create_pending, delete_computation, resolve_inputs
 from app.services.volume_engine import run_computation
 router = APIRouter(prefix="/projects/{project_id}/computations", tags=["computations"])
 
@@ -33,12 +33,12 @@ def create_computation(
     Poll `GET /projects/{id}/computations/{comp_id}` until `status` is `completed` or `failed`.
     """
     try:
-        store.ensure_projected_crs(project)
-        inputs = store.resolve_inputs(db, project.id, payload)
-    except store.ComputationInputError as exc:
+        ensure_projected_crs(project)
+        inputs = resolve_inputs(db, project.id, payload)
+    except ComputationInputError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    row = store.create_pending(db, project.id, inputs, payload)
+    row = create_pending(db, project.id, inputs, payload)
     background.add_task(run_computation, row.id)
     response.headers["Location"] = f"/projects/{project.id}/computations/{row.id}"
     return ComputationRead.from_row(row)
@@ -52,7 +52,7 @@ def list_computations(
     project: Project = Depends(get_project),
     db: Session = Depends(get_db),
 ):
-    rows, total = store.list_computations(db, project.id, status_filter, limit, offset)
+    rows, total = list_computations(db, project.id, status_filter, limit, offset)
     return ComputationList(
         items=[ComputationRead.from_row(r) for r in rows],
         total=total,
@@ -73,5 +73,5 @@ def delete_computation(
 ):
     if computation.status == ComputationStatus.running.value:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="computation is running; try again when it finishes")
-    store.delete_computation(db, computation)
+    delete_computation(db, computation)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

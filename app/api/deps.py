@@ -8,9 +8,10 @@ from app.services import project_store
 from app.models.survey import Survey
 from app.models.computation import Computation
 from app.models.report import Report
-from app.services import survey_service
+from app.services import survey_service, boundary_service
 from sqlalchemy import select
 
+from app.models.boundary import Boundary
 
 def get_project_or_404(project_id: int, db: Session = Depends(get_db)) -> Project:
     """Load the project named in the URL, or stop the request with a 404."""
@@ -78,3 +79,13 @@ def get_computation(
     if computation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Computation not found")
     return computation
+
+def get_boundary_or_404(
+    boundary_id: int,
+    project: Project = Depends(get_project_or_404),
+    db: Session = Depends(get_db),
+) -> Boundary:
+    boundary = boundary_service.get_boundary(db, project.id, boundary_id)
+    if boundary is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Boundary not found")
+    return boundary

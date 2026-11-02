@@ -24,7 +24,7 @@ from typing import Literal
 import numpy as np
 import shapely
 from scipy.spatial import Delaunay, QhullError
-
+from app.schemas.common import BoundaryType, SurfaceType
 
 from app.services.computation_runner import SurfaceConfig, clean_points, point_spacing, SurfaceModel
 
@@ -33,6 +33,12 @@ _TARGET_CELLS = 250_000
 _MAX_BOUNDARY_VERTICES = 50_000
 _TRI_CHUNK = 200_000
 _MIN_PIECE_AREA = 1e-12
+
+
+INITIAL_KIND = SurfaceType.initial_topo
+PROGRESS_KIND = SurfaceType.filled_topo
+SITE_KIND = BoundaryType.site_boundary
+FILL_KIND = BoundaryType.filled_boundary
 
 
 class EngineError(ValueError):

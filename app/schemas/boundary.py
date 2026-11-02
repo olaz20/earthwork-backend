@@ -34,7 +34,7 @@ class BoundaryPointOut(BaseModel):
 
 
 class BoundaryCreate(BaseModel):
-    """JSON body for creating a boundary. A file upload can be parsed into this same shape."""
+    """JSON body for creating a boundary. A file upload is parsed into this same shape."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -83,7 +83,7 @@ class BoundaryRead(BaseModel):
     recorded_on: dt.date
     survey_id: int | None
     created_at: dt.datetime
-    vertex_count: int = Field(0, description="Number of vertices (set by the service for list views)")
+    vertex_count: int = Field(0, description="Number of vertices")
 
 
 class BoundaryDetail(BoundaryRead):
@@ -92,4 +92,12 @@ class BoundaryDetail(BoundaryRead):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def area(self) -> float:
+        """Polygon area in project units², from the stored vertices."""
         return _shoelace_area(self.points) if len(self.points) >= 3 else 0.0
+
+
+class BoundaryList(BaseModel):
+    items: list[BoundaryRead]
+    total: int
+    limit: int
+    offset: int

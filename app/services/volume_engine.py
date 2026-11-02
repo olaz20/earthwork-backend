@@ -21,6 +21,8 @@ from app.services import computation_store as store
 from app.services.computation_runner import SurfaceConfig, SurfaceError
 from app.services.computation_store import EngineError, EngineParams, compute_earthwork
 
+from app.models.project import Project
+from app.services.surface_model import ComputationInputError, ensure_projected_crs, load_boundary_xy, load_survey_xyz
 logger = logging.getLogger(__name__)
 
 _MAX_ERROR_LEN = 2_000
@@ -69,14 +71,14 @@ def run_computation(computation_id: int) -> None:
             params = ComputationParameters.model_validate(requested)
             engine_params = _engine_params(row.method or "grid", params)
 
-            project = db.get(store.Project, row.project_id)
-            store.ensure_projected_crs(project)
+            project = db.get(Project, row.project_id)
+            ensure_projected_crs(project)
 
-            initial = store.load_survey_xyz(db, row.initial_survey_id)
-            progress = store.load_survey_xyz(db, row.progress_survey_id)
-            site = store.load_boundary_xy(db, row.site_boundary_id)
+            initial = load_survey_xyz(db, row.initial_survey_id)
+            progress = load_survey_xyz(db, row.progress_survey_id)
+            site = load_boundary_xy(db, row.site_boundary_id)
             fill = (
-                store.load_boundary_xy(db, row.fill_boundary_id)
+                load_boundary_xy(db, row.fill_boundary_id)
                 if row.fill_boundary_id is not None
                 else None
             )
@@ -100,7 +102,7 @@ def run_computation(computation_id: int) -> None:
             row.error = None
             row.completed_at = datetime.now(timezone.utc)
             db.commit()
-        except (store.ComputationInputError, EngineError, SurfaceError) as exc:
+        except (ComputationInputError, EngineError, SurfaceError) as exc:
             logger.warning("computation %s failed: %s", computation_id, exc)
             _fail(db, computation_id, str(exc))
         except Exception:  # noqa: BLE001 - never leave a run stuck in 'running'
