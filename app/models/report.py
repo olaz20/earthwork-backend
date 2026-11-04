@@ -18,7 +18,6 @@ class Report(Base):
     )
     title: Mapped[str] = mapped_column(String(150))
     format: Mapped[str] = mapped_column(String(10))  # "pdf", "xlsx"
-    file_path: Mapped[str] = mapped_column(String(500))
     
     filename: Mapped[str] = mapped_column(String(255))  # name offered on download
     stored_name: Mapped[str] = mapped_column(String(100))  # name on disk (uuid)
