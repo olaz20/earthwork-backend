@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     min_survey_points: int = 3
     insert_chunk_size: int = 5_000
 
+    redis_url: str
+
+    use_celery: bool = False
+
     model_config = SettingsConfigDict(env_file=".env")
 
     @property

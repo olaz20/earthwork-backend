@@ -2,16 +2,17 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_computation, get_db, get_project
-from app.models import Computation, Project
+from app.models.computation import Computation
+from app.models.project import Project
 from app.schemas.computation import (
     ComputationCreate,
     ComputationList,
     ComputationRead,
     ComputationStatus,
 )
+from app.services import computation_store as store
+from app.services.computation_dispatch import QueueUnavailable, dispatch
 
-from app.services.surface_model import ComputationInputError, ensure_projected_crs, list_computations, create_pending, delete_computation, resolve_inputs
-from app.services.volume_engine import run_computation
 router = APIRouter(prefix="/projects/{project_id}/computations", tags=["computations"])
 
 
@@ -33,13 +34,17 @@ def create_computation(
     Poll `GET /projects/{id}/computations/{comp_id}` until `status` is `completed` or `failed`.
     """
     try:
-        ensure_projected_crs(project)
-        inputs = resolve_inputs(db, project.id, payload)
-    except ComputationInputError as exc:
+        store.ensure_projected_crs(project)
+        inputs = store.resolve_inputs(db, project.id, payload)
+    except store.ComputationInputError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    row = create_pending(db, project.id, inputs, payload)
-    background.add_task(run_computation, row.id)
+    row = store.create_pending(db, project.id, inputs, payload)
+    try:
+        dispatch(row.id, background)
+    except QueueUnavailable as exc:
+        store.delete_computation(db, row)  # nothing will ever run it
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"{exc}; try again shortly") from exc
     response.headers["Location"] = f"/projects/{project.id}/computations/{row.id}"
     return ComputationRead.from_row(row)
 
@@ -52,7 +57,7 @@ def list_computations(
     project: Project = Depends(get_project),
     db: Session = Depends(get_db),
 ):
-    rows, total = list_computations(db, project.id, status_filter, limit, offset)
+    rows, total = store.list_computations(db, project.id, status_filter, limit, offset)
     return ComputationList(
         items=[ComputationRead.from_row(r) for r in rows],
         total=total,
@@ -73,5 +78,5 @@ def delete_computation(
 ):
     if computation.status == ComputationStatus.running.value:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="computation is running; try again when it finishes")
-    delete_computation(db, computation)
+    store.delete_computation(db, computation)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

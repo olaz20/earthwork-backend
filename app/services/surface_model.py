@@ -1,209 +1,223 @@
-"""Database access for computations: input resolution, CRUD, point loading."""
+"""Surface model: interpolation inside the survey, extrapolation out to the boundary.
+
+A ``SurfaceModel`` turns scattered (x, y, z) survey points into a function z = f(x, y)
+that is defined *everywhere* the site polygon reaches, not only inside the convex hull
+of the survey points.
+
+* Inside the hull of the data:  linear TIN (default), IDW or nearest neighbour.
+* Outside the hull (between the data and the site boundary): extrapolation by IDW or
+  nearest neighbour. For the linear model the site-boundary vertices are given an
+  extrapolated elevation and joined to the hull in a "collar" TIN, so the surface ramps
+  continuously from the last survey points to the boundary instead of jumping.
+
+Everything is computed on coordinates centred on the data (UTM-sized eastings/northings
+lose precision in Qhull otherwise).
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from scipy.interpolate import LinearNDInterpolator
+from scipy.spatial import ConvexHull, Delaunay, QhullError, cKDTree
 
-# Adjust the import path to wherever your models live.
-from app.models import (
-    Boundary,
-    BoundaryPoint,
-    Computation,
-    Project,
-    Survey,
-    SurveyPoint,
-)
-from app.schemas.common import BoundaryType
-from app.schemas.survey import SurfaceType
-from app.schemas.computation import ComputationCreate, ComputationStatus
+Interpolation = Literal["linear", "idw", "nearest"]
+Extrapolation = Literal["idw", "nearest", "none"]
 
-# Enum members that identify each input role. Change here if your enum names differ.
-INITIAL_KIND = SurfaceType.initial_topo
-PROGRESS_KIND = SurfaceType.filled_topo
-SITE_KIND = BoundaryType.site_boundary
-FILL_KIND = BoundaryType.filled_boundary
-
-MIN_SURVEY_POINTS = 3
-MIN_BOUNDARY_POINTS = 3
+_DEDUPE_DECIMALS = 6
 
 
-class ComputationInputError(ValueError):
-    """The requested inputs are missing, belong to another project, or are unusable."""
+class SurfaceError(ValueError):
+    """The survey points cannot form a usable surface, or coverage is insufficient."""
 
 
 @dataclass(frozen=True)
-class ResolvedInputs:
-    initial_survey_id: int
-    progress_survey_id: int
-    site_boundary_id: int
-    fill_boundary_id: int | None
+class SurfaceConfig:
+    interpolation: Interpolation = "linear"
+    extrapolation: Extrapolation = "idw"
+    idw_power: float = 2.0
+    idw_neighbors: int = 12
+    # Fail instead of extrapolating further than this from the nearest survey point
+    max_extrapolation_distance: float | None = None
 
 
-# ----------------------------------------------------------------------------- checks
-def ensure_projected_crs(project: Project) -> None:
-    """Areas/volumes in a geographic CRS (degrees) are meaningless; refuse them."""
-    if not project.crs:
-        return
-    try:
-        from pyproj import CRS
-    except ImportError:  # pyproj is optional
-        return
-    try:
-        crs = CRS.from_user_input(project.crs)
-    except Exception as exc:
-        raise ComputationInputError(f"project CRS '{project.crs}' is not recognised") from exc
-    if crs.is_geographic:
-        raise ComputationInputError(
-            f"project CRS '{project.crs}' is geographic (degrees); "
-            "reproject the data to a projected CRS before computing areas and volumes"
-        )
+@dataclass(frozen=True)
+class Evaluation:
+    z: np.ndarray
+    extrapolated: np.ndarray  # bool: point lies outside the hull of the survey points
+    distance: np.ndarray  # distance to nearest survey point (0 when not extrapolated)
 
 
-def _survey(db: Session, project_id: int, survey_id: int, kind, label: str) -> Survey:
-    survey = db.get(Survey, survey_id)
-    if survey is None or survey.project_id != project_id:
-        raise ComputationInputError(f"{label} {survey_id} does not exist in this project")
-    if survey.kind != kind:
-        raise ComputationInputError(f"{label} {survey_id} is not a {kind.value} survey")
-    return survey
-
-
-def _boundary(db: Session, project_id: int, boundary_id: int, kind, label: str) -> Boundary:
-    boundary = db.get(Boundary, boundary_id)
-    if boundary is None or boundary.project_id != project_id:
-        raise ComputationInputError(f"{label} {boundary_id} does not exist in this project")
-    if boundary.kind != kind:
-        raise ComputationInputError(f"{label} {boundary_id} is not a {kind.value} boundary")
-    return boundary
-
-
-def _count(db: Session, model, fk, value) -> int:
-    return db.scalar(select(func.count()).select_from(model).where(fk == value)) or 0
-
-
-def resolve_inputs(db: Session, project_id: int, payload: ComputationCreate) -> ResolvedInputs:
-    # initial survey
-    if payload.initial_survey_id is not None:
-        initial = _survey(db, project_id, payload.initial_survey_id, INITIAL_KIND, "initial survey")
-    else:
-        initial = db.scalars(
-            select(Survey).where(Survey.project_id == project_id, Survey.kind == INITIAL_KIND)
-        ).first()
-        if initial is None:
-            raise ComputationInputError("project has no initial topo survey")
-
-    # progress survey
-    if payload.progress_survey_id is not None:
-        progress = _survey(db, project_id, payload.progress_survey_id, PROGRESS_KIND, "progress survey")
-    else:
-        progress = db.scalars(
-            select(Survey)
-            .where(Survey.project_id == project_id, Survey.kind == PROGRESS_KIND)
-            .order_by(Survey.surveyed_on.desc(), Survey.id.desc())
-        ).first()
-        if progress is None:
-            raise ComputationInputError("project has no progress survey")
-
-    # site boundary
-    if payload.site_boundary_id is not None:
-        site = _boundary(db, project_id, payload.site_boundary_id, SITE_KIND, "site boundary")
-    else:
-        site = db.scalars(
-            select(Boundary)
-            .where(Boundary.project_id == project_id, Boundary.kind == SITE_KIND)
-            .order_by(Boundary.recorded_on.desc(), Boundary.id.desc())
-        ).first()
-        if site is None:
-            raise ComputationInputError("project has no site boundary")
-
-    # fill boundary (optional)
-    fill = None
-    if payload.fill_boundary_id is not None:
-        fill = _boundary(db, project_id, payload.fill_boundary_id, FILL_KIND, "fill boundary")
-    else:
-        fill = db.scalars(
-            select(Boundary)
-            .where(
-                Boundary.project_id == project_id,
-                Boundary.kind == FILL_KIND,
-                Boundary.survey_id == progress.id,
-            )
-            .order_by(Boundary.recorded_on.desc(), Boundary.id.desc())
-        ).first()
-
-    for survey, label in ((initial, "initial survey"), (progress, "progress survey")):
-        if _count(db, SurveyPoint, SurveyPoint.survey_id, survey.id) < MIN_SURVEY_POINTS:
-            raise ComputationInputError(f"{label} {survey.id} has fewer than {MIN_SURVEY_POINTS} points")
-    for boundary, label in ((site, "site boundary"), (fill, "fill boundary")):
-        if boundary is not None and (
-            _count(db, BoundaryPoint, BoundaryPoint.boundary_id, boundary.id) < MIN_BOUNDARY_POINTS
-        ):
-            raise ComputationInputError(f"{label} {boundary.id} has fewer than {MIN_BOUNDARY_POINTS} vertices")
-
-    return ResolvedInputs(initial.id, progress.id, site.id, fill.id if fill else None)
-
-
-# ------------------------------------------------------------------------------- CRUD
-def create_pending(
-    db: Session, project_id: int, inputs: ResolvedInputs, payload: ComputationCreate
-) -> Computation:
-    row = Computation(
-        project_id=project_id,
-        initial_survey_id=inputs.initial_survey_id,
-        progress_survey_id=inputs.progress_survey_id,
-        site_boundary_id=inputs.site_boundary_id,
-        fill_boundary_id=inputs.fill_boundary_id,
-        status=ComputationStatus.pending.value,
-        method=payload.method.value,
-        parameters={"requested": payload.parameters.model_dump(mode="json")},
+def clean_points(xyz: np.ndarray) -> tuple[np.ndarray, int]:
+    """Drop non-finite rows and merge coincident XY (average Z). Returns (points, merged)."""
+    a = np.asarray(xyz, dtype=float)
+    if a.ndim != 2 or a.shape[1] != 3:
+        raise SurfaceError("survey points must be an (N, 3) array")
+    a = a[np.isfinite(a).all(axis=1)]
+    if len(a) < 3:
+        raise SurfaceError("at least 3 valid survey points are required")
+    keys = np.round(a[:, :2], _DEDUPE_DECIMALS)
+    _, inverse = np.unique(keys, axis=0, return_inverse=True)
+    inverse = inverse.ravel()
+    counts = np.bincount(inverse)
+    merged = np.column_stack(
+        [np.bincount(inverse, weights=a[:, i]) / counts for i in range(3)]
     )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
+    if len(merged) < 3:
+        raise SurfaceError("survey points collapse to fewer than 3 distinct locations")
+    return merged, len(a) - len(merged)
 
 
-def list_computations(
-    db: Session,
-    project_id: int,
-    status: ComputationStatus | None,
-    limit: int,
-    offset: int,
-) -> tuple[list[Computation], int]:
-    cond = [Computation.project_id == project_id]
-    if status is not None:
-        cond.append(Computation.status == status.value)
-    total = db.scalar(select(func.count()).select_from(Computation).where(*cond)) or 0
-    rows = db.scalars(
-        select(Computation)
-        .where(*cond)
-        .order_by(Computation.created_at.desc(), Computation.id.desc())
-        .limit(limit)
-        .offset(offset)
-    ).all()
-    return list(rows), total
+def point_spacing(xy: np.ndarray) -> float:
+    """Characteristic point spacing: sqrt(hull area / point count)."""
+    xy = np.asarray(xy, dtype=float)[:, :2]
+    try:
+        area = ConvexHull(xy - xy.mean(axis=0)).volume  # 2-D "volume" is area
+    except QhullError as exc:
+        raise SurfaceError("survey points are collinear or degenerate") from exc
+    return float(np.sqrt(area / len(xy)))
 
 
-def delete_computation(db: Session, row: Computation) -> None:
-    db.delete(row)
-    db.commit()
+class SurfaceModel:
+    def __init__(
+        self,
+        xyz: np.ndarray,
+        config: SurfaceConfig,
+        conform_to_xy: np.ndarray | None = None,
+        label: str = "survey",
+    ) -> None:
+        pts, self.duplicates_merged = clean_points(xyz)
+        self.label = label
+        self.cfg = config
+        self._origin = pts[:, :2].mean(axis=0)
+        self._xy = pts[:, :2] - self._origin
+        self._z = pts[:, 2]
+        self._tree = cKDTree(self._xy)
+        self._tin = self._triangulate(self._xy)
+        self._linear = (
+            LinearNDInterpolator(self._tin, self._z)
+            if config.interpolation == "linear"
+            else None
+        )
+        self._collar: LinearNDInterpolator | None = None
+        if conform_to_xy is not None and len(conform_to_xy):
+            self._collar = self._build_collar(
+                np.asarray(conform_to_xy, dtype=float) - self._origin
+            )
+        self.point_count = len(pts)
+        self.spacing = point_spacing(pts)
 
+    # ---- public -----------------------------------------------------------------
+    @property
+    def xy(self) -> np.ndarray:
+        return self._xy + self._origin
 
-# ------------------------------------------------------------------------ point loading
-def load_survey_xyz(db: Session, survey_id: int) -> np.ndarray:
-    rows = db.execute(
-        select(SurveyPoint.x, SurveyPoint.y, SurveyPoint.z).where(SurveyPoint.survey_id == survey_id)
-    ).all()
-    return np.asarray(rows, dtype=float).reshape(-1, 3)
+    def evaluate(self, xy: np.ndarray) -> Evaluation:
+        q = np.asarray(xy, dtype=float).reshape(-1, 2) - self._origin
+        n = len(q)
+        z = np.full(n, np.nan)
+        dist = np.zeros(n)
+        inside = self._tin.find_simplex(q) >= 0
+        outside = ~inside
 
+        if inside.any():
+            qi = q[inside]
+            if self._linear is not None:
+                z[inside] = self._linear(qi)
+            elif self.cfg.interpolation == "idw":
+                z[inside] = self._idw(qi)
+            else:
+                z[inside] = self._nearest(qi)
 
-def load_boundary_xy(db: Session, boundary_id: int) -> np.ndarray:
-    rows = db.execute(
-        select(BoundaryPoint.x, BoundaryPoint.y)
-        .where(BoundaryPoint.boundary_id == boundary_id)
-        .order_by(BoundaryPoint.seq)
-    ).all()
-    return np.asarray(rows, dtype=float).reshape(-1, 2)
+        if outside.any():
+            if self.cfg.extrapolation == "none":
+                raise SurfaceError(
+                    "computation area extends beyond the survey coverage and "
+                    "extrapolation is disabled"
+                )
+            qo = q[outside]
+            d = self._tree.query(qo)[0]
+            self._check_distance(d)
+            dist[outside] = d
+            z[outside] = self._extrapolate(qo)
+
+        # Linear interpolation can return NaN for points on hull edges
+        bad = np.isnan(z)
+        if bad.any():
+            z[bad] = self._direct(q[bad])
+        return Evaluation(z=z, extrapolated=outside, distance=dist)
+
+    # ---- internals --------------------------------------------------------------
+    @staticmethod
+    def _triangulate(xy: np.ndarray) -> Delaunay:
+        try:
+            return Delaunay(xy)
+        except QhullError as exc:
+            raise SurfaceError("survey points are collinear or degenerate") from exc
+
+    def _check_distance(self, d: np.ndarray) -> None:
+        limit = self.cfg.max_extrapolation_distance
+        if limit is not None and d.size and float(d.max()) > limit:
+            lo = self._xy.min(axis=0) + self._origin
+            hi = self._xy.max(axis=0) + self._origin
+            raise SurfaceError(
+                f"the {self.label} does not cover the computation area: it is "
+                f"{float(d.max()):.2f} from the nearest survey point (limit {limit:.2f}). "
+                f"The {self.label} points span x {lo[0]:.1f} to {hi[0]:.1f}, "
+                f"y {lo[1]:.1f} to {hi[1]:.1f}. Check that the boundary and the survey use "
+                f"the same coordinate system and cover the same ground; if the survey only "
+                f"covers the fill area, use a fill boundary with cut_scope=fill_boundary"
+            )
+
+    def _nearest(self, q: np.ndarray) -> np.ndarray:
+        return self._z[self._tree.query(q)[1]]
+
+    def _idw(self, q: np.ndarray) -> np.ndarray:
+        k = min(self.cfg.idw_neighbors, len(self._z))
+        d, idx = self._tree.query(q, k=k)
+        if k == 1:
+            d, idx = d[:, None], idx[:, None]
+        with np.errstate(divide="ignore"):
+            w = 1.0 / np.power(d, self.cfg.idw_power)
+        exact = d < 1e-12
+        hit = exact.any(axis=1)
+        if hit.any():
+            w[hit] = exact[hit].astype(float)
+        return (w * self._z[idx]).sum(axis=1) / w.sum(axis=1)
+
+    def _direct(self, q: np.ndarray) -> np.ndarray:
+        """Point-wise extrapolation with the configured method (no collar)."""
+        if self.cfg.extrapolation == "nearest":
+            return self._nearest(q)
+        return self._idw(q)
+
+    def _extrapolate(self, q: np.ndarray) -> np.ndarray:
+        if self._collar is None:
+            return self._direct(q)
+        z = self._collar(q)
+        bad = np.isnan(z)
+        if bad.any():
+            z[bad] = self._direct(q[bad])
+        return z
+
+    def _build_collar(self, boundary: np.ndarray) -> LinearNDInterpolator | None:
+        """TIN of (hull vertices + extrapolated boundary vertices) for the ring around the data."""
+        if self.cfg.interpolation != "linear" or self.cfg.extrapolation == "none":
+            return None
+        outside = self._tin.find_simplex(boundary) < 0
+        b_out = boundary[outside]
+        if not len(b_out):
+            return None
+        self._check_distance(self._tree.query(b_out)[0])
+        zb = self._direct(b_out)
+        hull = np.unique(self._tin.convex_hull)
+        pts = np.vstack([self._xy[hull], b_out])
+        zz = np.concatenate([self._z[hull], zb])
+        _, first = np.unique(np.round(pts, _DEDUPE_DECIMALS), axis=0, return_index=True)
+        first = np.sort(first)  # data hull vertices win over coincident boundary vertices
+        try:
+            tri = Delaunay(pts[first])
+        except QhullError:
+            return None
+        return LinearNDInterpolator(tri, zz[first])

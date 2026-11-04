@@ -6,11 +6,11 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Computation, Survey  # adjust import path if needed
+from app.models.computation import Computation
+from app.models.survey import Survey
 from app.schemas.computation import ComputationMethod, ComputationStatus
+from app.services.kinds import INITIAL_KIND, PROGRESS_KIND
 from app.services.progress_calc import SurveyRun
-
-from app.services.surface_model import INITIAL_KIND, PROGRESS_KIND, SITE_KIND
 
 
 def completed_runs(
