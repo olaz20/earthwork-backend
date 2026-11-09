@@ -3,6 +3,9 @@ x-app: &app
   image: earthwork-api:latest
   environment:
     DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/1
     DATA_DIR: /app/data
     DEBUG: "false"
     WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
@@ -22,12 +25,35 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    # No "ports": the database is reachable only from other containers.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly: queued jobs survive a Redis restart
+    # noeviction: a full broker must refuse writes, never silently drop jobs
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}   # lets redis-cli authenticate without a flag
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # No "ports": reachable only from other containers.
 
   migrate:
     <<: *app
     command: ["alembic", "upgrade", "head"]
     restart: "no"
+    healthcheck:
+      disable: true     # the image's healthcheck targets the API port
     depends_on:
       db:
         condition: service_healthy
@@ -38,6 +64,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     ports:
@@ -45,8 +73,51 @@ services:
     volumes:
       - appdata:/app/data
 
-  
+  worker:
+    <<: *app
+    restart: unless-stopped
+    command: >
+      celery -A app.core.celery_app:celery_app worker
+      --hostname=worker@%h
+      --queues=default,computations
+      --concurrency=${CELERY_CONCURRENCY:-2}
+      --max-tasks-per-child=20
+      --loglevel=info
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - appdata:/app/data     # same volume as the API: uploads in, reports out
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.worker.celery_app inspect ping -d worker@$$HOSTNAME --timeout 5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 60s    # lets a running job finish on `docker compose stop`
+
+  # Optional: periodic jobs. Run exactly ONE beat. Start with:
+  #   docker compose --profile beat up -d
+  beat:
+    <<: *app
+    profiles: ["beat"]
+    restart: unless-stopped
+    command: >
+      celery -A app.worker.celery_app beat
+      --schedule=/tmp/celerybeat-schedule
+      --loglevel=info
+    healthcheck:
+      disable: true
+    depends_on:
+      redis:
+        condition: service_healthy
+
+
 volumes:
   pgdata:
+  redisdata:
   appdata:
-  caddy_data:
