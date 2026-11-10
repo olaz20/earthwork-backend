@@ -1,0 +1,18 @@
+{
+    olamoyegunolamidesammy@gmail.com
+}
+
+{$DOMAIN} {
+    encode zstd gzip
+
+    request_body {
+        max_size 60MB
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        -Server
+    }
+
+    reverse_proxy api:8000
+}

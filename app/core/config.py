@@ -20,7 +20,11 @@ class Settings(BaseSettings):
     use_celery: bool = False
 
     model_config = SettingsConfigDict(env_file=".env")
-
+    redis_password: str
+    celery_concurrency: str
+    domain: str
+    api_bind: str
+    
     @property
     def upload_dir(self) -> Path:
         return self.data_dir / "uploads"

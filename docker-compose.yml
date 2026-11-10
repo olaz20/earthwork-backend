@@ -99,6 +99,23 @@ services:
       retries: 3
       start_period: 30s
     stop_grace_period: 60s    # lets a running job finish on `docker compose stop`
+  
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"        # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data     # certificates live here
+      - caddy_config:/config
+    depends_on:
+      - api
 
   # Optional: periodic jobs. Run exactly ONE beat. Start with:
   #   docker compose --profile beat up -d
