@@ -29,8 +29,6 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # appendonly: queued jobs survive a Redis restart
-    # noeviction: a full broker must refuse writes, never silently drop jobs
     command: >
       redis-server
       --appendonly yes
@@ -38,7 +36,7 @@ services:
       --maxmemory 256mb
       --maxmemory-policy noeviction
     environment:
-      REDISCLI_AUTH: ${REDIS_PASSWORD}   # lets redis-cli authenticate without a flag
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     volumes:
       - redisdata:/data
     healthcheck:
@@ -46,14 +44,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    # No "ports": reachable only from other containers.
 
   migrate:
     <<: *app
     command: ["alembic", "upgrade", "head"]
     restart: "no"
     healthcheck:
-      disable: true     # the image's healthcheck targets the API port
+      disable: true
     depends_on:
       db:
         condition: service_healthy
@@ -69,7 +66,7 @@ services:
       migrate:
         condition: service_completed_successfully
     ports:
-      - "${API_BIND:-0.0.0.0}:8000:8000"
+      - "${API_BIND:-127.0.0.1}:8000:8000"
     volumes:
       - appdata:/app/data
 
@@ -91,15 +88,14 @@ services:
       migrate:
         condition: service_completed_successfully
     volumes:
-      - appdata:/app/data     # same volume as the API: uploads in, reports out
+      - appdata:/app/data
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.worker.celery_app inspect ping -d worker@$$HOSTNAME --timeout 5"]
+      test: ["CMD-SHELL", "celery -A app.core.celery_app:celery_app inspect ping -d worker@$$HOSTNAME --timeout 5"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
-    stop_grace_period: 60s    # lets a running job finish on `docker compose stop`
-  
+    stop_grace_period: 60s
 
   caddy:
     image: caddy:2-alpine
@@ -109,22 +105,22 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp"        # HTTP/3
+      - "443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data     # certificates live here
+      - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - api
 
-  # Optional: periodic jobs. Run exactly ONE beat. Start with:
+  # Optional: periodic jobs. Run exactly ONE beat.
   #   docker compose --profile beat up -d
   beat:
     <<: *app
     profiles: ["beat"]
     restart: unless-stopped
     command: >
-      celery -A app.worker.celery_app beat
+      celery -A app.core.celery_app:celery_app beat
       --schedule=/tmp/celerybeat-schedule
       --loglevel=info
     healthcheck:
@@ -133,8 +129,9 @@ services:
       redis:
         condition: service_healthy
 
-
 volumes:
   pgdata:
   redisdata:
   appdata:
+  caddy_data:
+  caddy_config:
