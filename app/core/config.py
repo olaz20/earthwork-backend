@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     celery_concurrency: str
     domain: str
     api_bind: str
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     
     @property
     def upload_dir(self) -> Path:
